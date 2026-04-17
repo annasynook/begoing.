@@ -112,6 +112,22 @@ export default function App() {
 
   const hasMapboxToken = Boolean(MAPBOX_TOKEN)
 
+  const ensureProfile = async (user) => {
+    if (!supabase || !user?.id) return
+
+    const { error } = await supabase.from('profiles').upsert({
+      id: user.id,
+      email: user.email || '',
+      name: user.user_metadata?.name || user.email?.split('@')[0] || '',
+      city: '',
+      interests: [],
+    })
+
+    if (error) {
+      throw error
+    }
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') return undefined
 
@@ -125,9 +141,21 @@ export default function App() {
   useEffect(() => {
     if (!supabase) return undefined
 
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      setSession(session)
+      if (session?.user) {
+        try {
+          await ensureProfile(session.user)
+        } catch (_error) {
+          // keep the session even if profile bootstrap fails; create flow will retry
+        }
+      }
+    })
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession)
+      if (nextSession?.user) {
+        ensureProfile(nextSession.user).catch(() => {})
+      }
     })
 
     return () => subscription.unsubscribe()
@@ -348,7 +376,20 @@ export default function App() {
   const handleEventCreated = async (createRequest) => {
     setCreateLoading(true)
     setCreateError('')
-    const ok = await createRequest()
+    let ok = false
+    try {
+      const {
+        data: { session: freshSession },
+      } = await supabase.auth.getSession()
+
+      if (freshSession?.user) {
+        await ensureProfile(freshSession.user)
+      }
+
+      ok = await createRequest()
+    } catch (error) {
+      setCreateError(error.message || 'Could not prepare your account for event creation.')
+    }
     setCreateLoading(false)
 
     if (!ok) return

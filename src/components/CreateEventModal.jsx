@@ -68,10 +68,6 @@ export default function CreateEventModal({
   }
 
   const submit = async () => {
-    if (!session?.user?.id) {
-      setError('Sign in again before creating an event.')
-      return
-    }
     if (!form.title.trim() || !form.date || !form.city.trim()) {
       setError('Title, date, and city are required.')
       return
@@ -88,6 +84,15 @@ export default function CreateEventModal({
         return false
       }
 
+      const {
+        data: { session: freshSession },
+      } = await supabase.auth.getSession()
+
+      if (!freshSession?.user?.id) {
+        setError('Sign in again before creating an event.')
+        return false
+      }
+
       const { error: createError } = await supabase.from('events').insert({
         title: form.title.trim(),
         description: form.description.trim(),
@@ -95,8 +100,8 @@ export default function CreateEventModal({
         city: form.city.trim(),
         category: form.category,
         max_attendees: form.max_attendees ? parseInt(form.max_attendees, 10) : 0,
-        host_id: session.user.id,
-        attendees: [session.user.id],
+        host_id: freshSession.user.id,
+        attendees: [freshSession.user.id],
         lat: pickedLoc.lat,
         lng: pickedLoc.lng,
       })

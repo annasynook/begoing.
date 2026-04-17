@@ -57,6 +57,7 @@ input, textarea {
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
+  flex-wrap: wrap;
   background: linear-gradient(to bottom, rgba(239,234,225,0.96), rgba(239,234,225,0.65), transparent);
 }
 
@@ -83,6 +84,8 @@ input, textarea {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .glass-button,
@@ -231,7 +234,7 @@ input, textarea {
   border-top: 1px solid rgba(0,0,0,0.08);
   border-radius: 26px 26px 0 0;
   min-height: 44dvh;
-  max-height: 75dvh;
+  max-height: min(75dvh, 680px);
   overflow: auto;
   padding: 18px 16px 28px;
   transform: translateY(calc(100% - 66px));
@@ -438,18 +441,19 @@ input, textarea {
   display: flex;
   justify-content: center;
   align-items: flex-end;
-  padding: 16px;
+  padding: 12px;
 }
 
 .sheet-modal {
-  width: min(100%, 560px);
-  max-height: calc(100dvh - 28px);
+  width: min(100%, 620px);
+  max-height: calc(100dvh - 24px);
   overflow: auto;
   background: rgba(251,248,243,0.98);
   border-radius: 28px 28px 20px 20px;
   box-shadow: 0 18px 48px rgba(22, 18, 14, 0.2);
   border: 1px solid rgba(0,0,0,0.08);
   padding: 0 18px 24px;
+  overscroll-behavior: contain;
 }
 
 .event-sheet-desktop {
@@ -457,7 +461,7 @@ input, textarea {
   align-self: center;
   border-radius: 24px;
   max-width: 520px;
-  max-height: calc(100dvh - 80px);
+  max-height: calc(100dvh - 48px);
 }
 
 .sheet-handle {
@@ -741,13 +745,68 @@ input, textarea {
   }
 }
 
+@media (max-width: 719px) {
+  .top-bar {
+    padding: 14px 14px 22px;
+    gap: 12px;
+  }
+
+  .brand-mark {
+    font-size: 28px;
+  }
+
+  .brand-subtitle {
+    font-size: 13px;
+    max-width: 280px;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .primary-chip,
+  .glass-button {
+    padding: 10px 14px;
+  }
+
+  .panel {
+    max-height: min(74dvh, 620px);
+  }
+
+  .sheet-modal {
+    width: 100%;
+    max-height: calc(100dvh - 12px);
+    border-radius: 24px 24px 18px 18px;
+    padding: 0 14px 20px;
+  }
+
+  .sheet-title {
+    font-size: 24px;
+  }
+
+  .sheet-subtitle {
+    font-size: 13px;
+  }
+
+  .location-box {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .event-actions {
+    flex-direction: column;
+  }
+}
+
 @media (min-width: 980px) {
   .sheet-scrim {
     align-items: center;
+    padding: 24px;
   }
 
   .sheet-modal {
     border-radius: 24px;
-    max-height: calc(100dvh - 60px);
+    max-height: calc(100dvh - 48px);
   }
 }
