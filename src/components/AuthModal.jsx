@@ -8,56 +8,95 @@ export default function AuthModal({ C, onSuccess, onClose }) {
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
 
   const submit = async () => {
-    setLoading(true); setError('')
+    if (!supabase) {
+      setError('Supabase is not configured yet.')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    setInfo('')
+
     if (mode === 'signup') {
-      const { data, error: e } = await supabase.auth.signUp({ email, password })
-      if (e) { setError(e.message); setLoading(false); return }
+      const { data, error: signUpError } = await supabase.auth.signUp({ email, password })
+      if (signUpError) {
+        setError(signUpError.message)
+        setLoading(false)
+        return
+      }
+
       if (data.user) {
         await supabase.from('profiles').upsert({
-          id: data.user.id, name, email, city: '', interests: [],
+          id: data.user.id,
+          name,
+          email,
+          city: '',
+          interests: [],
         })
       }
+
+      if (!data.session) {
+        setInfo('Check your email for the confirmation link, then come back and sign in.')
+        setMode('login')
+        setLoading(false)
+        return
+      }
     } else {
-      const { error: e } = await supabase.auth.signInWithPassword({ email, password })
-      if (e) { setError(e.message); setLoading(false); return }
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+      if (signInError) {
+        setError(signInError.message)
+        setLoading(false)
+        return
+      }
     }
+
     setLoading(false)
     onSuccess()
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(6px)', zIndex: 100, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: 'white', borderRadius: '24px 24px 0 0', padding: '28px 24px 48px', width: '100%', maxWidth: 480 }}>
-        <div style={{ width: 36, height: 4, background: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 24px' }} />
-        <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 4 }}>
-          {mode === 'login' ? 'Welcome back' : 'Join begoing.'}
+    <div className="sheet-scrim" onClick={onClose}>
+      <div className="sheet-modal auth-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="sheet-handle" />
+        <div className="sheet-head">
+          <div>
+            <div className="sheet-title">{mode === 'login' ? 'Welcome back' : 'Create your account'}</div>
+            <div className="sheet-subtitle">{mode === 'login' ? 'Sign in to join and host events.' : 'You only need email and password to start.'}</div>
+          </div>
+          <button type="button" className="icon-dismiss" onClick={onClose}>x</button>
         </div>
-        <div style={{ fontSize: 14, color: C.muted, marginBottom: 22 }}>
-          {mode === 'login' ? 'Sign in to join events' : 'Create your free account'}
-        </div>
 
-        {mode === 'signup' && <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />}
-        <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" type="email" />
-        <Input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password (min 6 chars)" type="password" onKeyDown={(e) => e.key === 'Enter' && submit()} />
+        <div className="sheet-grid">
+          {mode === 'signup' ? (
+            <input className="sheet-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="Your name" />
+          ) : null}
+          <input className="sheet-input" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="Email" type="email" />
+          <input className="sheet-input" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password (min 6 chars)" type="password" onKeyDown={(event) => { if (event.key === 'Enter') submit() }} />
 
-        {error && <div style={{ fontSize: 13, color: '#c0392b', marginBottom: 12 }}>{error}</div>}
+          {error ? <div className="error-copy">{error}</div> : null}
+          {info ? <div className="info-copy">{info}</div> : null}
 
-        <button onClick={submit} disabled={loading} style={{ width: '100%', padding: 14, borderRadius: 14, background: C.primary, color: 'white', border: 'none', fontSize: 16, fontWeight: 700, marginBottom: 16 }}>
-          {loading ? '...' : mode === 'login' ? 'Sign in' : 'Create account'}
-        </button>
-        <div style={{ textAlign: 'center', fontSize: 14, color: C.muted }}>
-          {mode === 'login' ? "Don't have an account? " : 'Already have one? '}
-          <button onClick={() => { setMode((m) => m === 'login' ? 'signup' : 'login'); setError('') }} style={{ background: 'none', border: 'none', color: C.primary, fontWeight: 700, cursor: 'pointer' }}>
-            {mode === 'login' ? 'Sign up' : 'Sign in'}
+          <button type="button" className="primary-submit" disabled={loading} onClick={submit}>
+            {loading ? 'Working...' : mode === 'login' ? 'Sign in' : 'Create account'}
+          </button>
+
+          <button
+            type="button"
+            className="text-switch"
+            onClick={() => {
+              setMode((current) => (current === 'login' ? 'signup' : 'login'))
+              setError('')
+              setInfo('')
+            }}
+            style={{ color: C.primary }}
+          >
+            {mode === 'login' ? 'Need an account? Sign up' : 'Already have an account? Sign in'}
           </button>
         </div>
       </div>
     </div>
   )
 }
-
-const Input = (props) => (
-  <input style={{ width: '100%', padding: '12px 14px', borderRadius: 11, border: '1px solid rgba(0,0,0,0.1)', fontSize: 15, marginBottom: 12, outline: 'none', display: 'block', background: '#fafaf8' }} {...props} />
-)

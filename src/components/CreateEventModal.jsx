@@ -1,88 +1,247 @@
-import { useState } from 'react'
-import { supabase } from '../lib/supabase'
+import { useEffect, useRef, useState } from 'react'
 
-const CATEGORIES = ['Social', 'Sports', 'Arts', 'Education', 'Tech', 'Outdoors', 'Faith', 'Food', 'Music']
+function findCity(feature) {
+  const context = feature.context || []
+  const city = context.find((item) => item.id.startsWith('place') || item.id.startsWith('locality'))
+  return city?.text || ''
+}
 
-export default function CreateEventModal({ C, session, pickedLoc, onPickLocation, onCreated, onClose }) {
-  const [form, setForm] = useState({
-    title: '', description: '', date: '', city: '', category: 'Social', max_attendees: '',
-  })
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+export default function CreateEventModal({
+  C,
+  session,
+  pickedLoc,
+  form,
+  setForm,
+  loading,
+  error,
+  info,
+  setError,
+  setInfo,
+  categories,
+  mapboxToken,
+  onAddressPick,
+  onPickLocation,
+  onCreated,
+  onClose,
+}) {
+  const [results, setResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [dragY, setDragY] = useState(0)
+  const touchStartRef = useRef(null)
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
+  useEffect(() => {
+    if (!form.addressQuery?.trim() || form.addressQuery === form.addressLabel) {
+      setResults([])
+      return undefined
+    }
+
+    if (!mapboxToken) {
+      setResults([])
+      return undefined
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const response = await fetch(
+          `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(form.addressQuery)}.json?access_token=${mapboxToken}&autocomplete=true&limit=5&types=address,place,poi,locality,neighborhood`,
+          { signal: controller.signal },
+        )
+        const data = await response.json()
+        setResults(data.features || [])
+      } catch (_error) {
+        setResults([])
+      } finally {
+        setSearching(false)
+      }
+    }, 350)
+
+    return () => {
+      clearTimeout(timer)
+      controller.abort()
+    }
+  }, [form.addressLabel, form.addressQuery, mapboxToken])
+
+  const set = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }))
+  }
 
   const submit = async () => {
-    if (!form.title.trim() || !form.date || !form.city.trim()) {
-      setError('Title, date, and city are required.'); return
+    if (!session?.user?.id) {
+      setError('Sign in again before creating an event.')
+      return
     }
-    if (!pickedLoc) { setError('Please pin a location on the map.'); return }
+    if (!form.title.trim() || !form.date || !form.city.trim()) {
+      setError('Title, date, and city are required.')
+      return
+    }
+    if (!pickedLoc) {
+      setError('Choose an address or pin the event on the map.')
+      return
+    }
 
-    setLoading(true); setError('')
-    const { error: e } = await supabase.from('events').insert({
-      title: form.title.trim(),
-      description: form.description.trim(),
-      date: form.date,
-      city: form.city.trim(),
-      category: form.category,
-      max_attendees: form.max_attendees ? parseInt(form.max_attendees) : 0,
-      host_id: session.user.id,
-      attendees: [session.user.id],
-      lat: pickedLoc.lat,
-      lng: pickedLoc.lng,
+    await onCreated(async () => {
+      const { supabase } = await import('../lib/supabase')
+      if (!supabase) {
+        setError('Supabase is not configured yet.')
+        return false
+      }
+
+      const { error: createError } = await supabase.from('events').insert({
+        title: form.title.trim(),
+        description: form.description.trim(),
+        date: form.date,
+        city: form.city.trim(),
+        category: form.category,
+        max_attendees: form.max_attendees ? parseInt(form.max_attendees, 10) : 0,
+        host_id: session.user.id,
+        attendees: [session.user.id],
+        lat: pickedLoc.lat,
+        lng: pickedLoc.lng,
+      })
+
+      if (createError) {
+        setError(createError.message)
+        return false
+      }
+
+      return true
     })
-    setLoading(false)
-    if (e) { setError(e.message); return }
-    onCreated()
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(6px)', zIndex: 100, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }} onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: 'white', borderRadius: '24px 24px 0 0', padding: '24px 20px 48px', width: '100%', maxWidth: 480, maxHeight: '88dvh', overflowY: 'auto' }}>
-        <div style={{ width: 36, height: 4, background: 'rgba(0,0,0,0.12)', borderRadius: 2, margin: '0 auto 20px' }} />
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-          <div style={{ fontWeight: 800, fontSize: 20 }}>New gathering</div>
-          <button onClick={onClose} style={{ background: 'rgba(0,0,0,0.07)', border: 'none', borderRadius: '50%', width: 30, height: 30, fontSize: 16, color: '#666' }}>×</button>
+    <div className="sheet-scrim" onClick={onClose}>
+      <div
+        className="sheet-modal create-sheet"
+        style={dragY > 0 ? { transform: `translateY(${dragY}px)` } : undefined}
+        onClick={(event) => event.stopPropagation()}
+        onTouchStart={(event) => { touchStartRef.current = event.touches[0].clientY }}
+        onTouchMove={(event) => {
+          if (touchStartRef.current == null) return
+          const delta = event.touches[0].clientY - touchStartRef.current
+          setDragY(delta > 0 ? delta : 0)
+        }}
+        onTouchEnd={() => {
+          if (dragY > 110) onClose()
+          setDragY(0)
+          touchStartRef.current = null
+        }}
+      >
+        <div className="sheet-handle" />
+        <div className="sheet-head">
+          <div>
+            <div className="sheet-title">Create a gathering</div>
+            <div className="sheet-subtitle">Search an address or pin it directly on the map.</div>
+          </div>
+          <button type="button" className="icon-dismiss" onClick={onClose}>x</button>
         </div>
 
-        <Label>Title *</Label>
-        <Input value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="e.g. Sunday Hike in Nose Hill" />
+        <div className="sheet-grid">
+          <div>
+            <div className="field-label">Title *</div>
+            <input className="sheet-input" value={form.title} onChange={(event) => set('title', event.target.value)} placeholder="Sunset coffee walk" />
+          </div>
 
-        <Label>Description</Label>
-        <textarea value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="What should people expect?" rows={2}
-          style={{ ...inputSt, resize: 'none' }} />
+          <div>
+            <div className="field-label">Description</div>
+            <textarea className="sheet-textarea" value={form.description} onChange={(event) => set('description', event.target.value)} placeholder="What kind of vibe are people joining?" />
+          </div>
 
-        <Label>Date & time *</Label>
-        <Input type="datetime-local" value={form.date} onChange={(e) => set('date', e.target.value)} />
+          <div className="two-column">
+            <div>
+              <div className="field-label">Date *</div>
+              <input className="sheet-input" type="datetime-local" value={form.date} onChange={(event) => set('date', event.target.value)} />
+            </div>
+            <div>
+              <div className="field-label">City *</div>
+              <input className="sheet-input" value={form.city} onChange={(event) => set('city', event.target.value)} placeholder="Calgary, AB" />
+            </div>
+          </div>
 
-        <Label>City *</Label>
-        <Input value={form.city} onChange={(e) => set('city', e.target.value)} placeholder="e.g. Calgary, AB" />
+          <div>
+            <div className="field-label">Category</div>
+            <div className="category-grid">
+              {categories.map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={`category-choice ${form.category === item.value ? 'active' : ''}`}
+                  onClick={() => set('category', item.value)}
+                >
+                  <span>{item.emoji}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-        <Label>Category</Label>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 16 }}>
-          {CATEGORIES.map((c) => (
-            <button key={c} onClick={() => set('category', c)} style={{ padding: '6px 13px', borderRadius: 20, border: `1.5px solid ${form.category === c ? C.primary : 'rgba(0,0,0,0.1)'}`, background: form.category === c ? C.primaryLight : 'transparent', color: form.category === c ? C.primary : C.muted, fontSize: 13, fontWeight: form.category === c ? 600 : 400 }}>{c}</button>
-          ))}
+          <div>
+            <div className="field-label">Address search</div>
+            <input
+              className="sheet-input"
+              value={form.addressQuery}
+              onChange={(event) => {
+                set('addressQuery', event.target.value)
+                set('addressLabel', '')
+                setInfo('')
+              }}
+              placeholder="123 17 Ave SW, Calgary"
+            />
+            <div className="helper-copy">Type an address, cafe, park, or neighborhood.</div>
+            {searching ? <div className="helper-copy">Searching address...</div> : null}
+            {results.length > 0 ? (
+              <div className="address-results">
+                {results.map((feature) => (
+                  <button
+                    key={feature.id}
+                    type="button"
+                    className="address-result"
+                    onClick={() => {
+                      onAddressPick({
+                        center: feature.center,
+                        placeName: feature.place_name,
+                        city: findCity(feature),
+                      })
+                      setResults([])
+                    }}
+                  >
+                    <span>{feature.text}</span>
+                    <small>{feature.place_name}</small>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="location-box">
+            <div>
+              <div className="field-label">Pinned location</div>
+              <div className="location-copy">
+                {pickedLoc
+                  ? `${pickedLoc.lat}, ${pickedLoc.lng}`
+                  : 'No map pin yet. You can search an address or choose manually.'}
+              </div>
+              {form.addressLabel ? <div className="helper-copy">{form.addressLabel}</div> : null}
+            </div>
+            <button type="button" className="outline-button" onClick={onPickLocation}>
+              Pick on map
+            </button>
+          </div>
+
+          <div>
+            <div className="field-label">Max attendees</div>
+            <input className="sheet-input" type="number" value={form.max_attendees} onChange={(event) => set('max_attendees', event.target.value)} placeholder="Leave empty for unlimited" />
+          </div>
+
+          {error ? <div className="error-copy">{error}</div> : null}
+          {info ? <div className="info-copy">{info}</div> : null}
+
+          <button type="button" className="primary-submit" disabled={loading} onClick={submit}>
+            {loading ? 'Creating...' : 'Publish event'}
+          </button>
         </div>
-
-        <Label>Max attendees <span style={{ color: C.light, fontWeight: 400 }}>(optional)</span></Label>
-        <Input type="number" value={form.max_attendees} onChange={(e) => set('max_attendees', e.target.value)} placeholder="Leave empty = unlimited" />
-
-        <Label>Location on map *</Label>
-        <button onClick={onPickLocation} style={{ width: '100%', padding: '12px', borderRadius: 12, border: `1.5px dashed ${pickedLoc ? C.primary : 'rgba(0,0,0,0.15)'}`, background: pickedLoc ? C.primaryLight : '#fafaf8', color: pickedLoc ? C.primary : C.muted, fontSize: 14, fontWeight: 600, marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-          📍 {pickedLoc ? `${pickedLoc.lat}, ${pickedLoc.lng}` : 'Tap to pin on map'}
-        </button>
-
-        {error && <div style={{ fontSize: 13, color: '#c0392b', marginBottom: 12 }}>{error}</div>}
-
-        <button onClick={submit} disabled={loading} style={{ width: '100%', padding: 14, borderRadius: 14, background: C.primary, color: 'white', border: 'none', fontSize: 16, fontWeight: 700 }}>
-          {loading ? 'Creating...' : 'Publish gathering →'}
-        </button>
       </div>
     </div>
   )
 }
-
-const inputSt = { width: '100%', padding: '12px 14px', borderRadius: 11, border: '1px solid rgba(0,0,0,0.1)', fontSize: 14, marginBottom: 14, outline: 'none', display: 'block', background: '#fafaf8' }
-const Input = (props) => <input style={inputSt} {...props} />
-const Label = ({ children }) => <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 7, color: '#1a1714' }}>{children}</div>
