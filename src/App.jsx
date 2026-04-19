@@ -1,16 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
 import { hasSupabaseConfig, supabase } from './lib/supabase'
+import { canViewEvent, parseEventRecord } from './lib/eventDetails'
+import { ensureDirectThread, ensureEventThread, fetchSocialData, respondToFriendRequest, sendFriendRequest, sendMessage } from './lib/social'
 import AuthModal from './components/AuthModal'
 import EventSheet from './components/EventSheet'
 import CreateEventModal from './components/CreateEventModal'
 import ProfileSheet from './components/ProfileSheet'
+import ManageEventsSheet from './components/ManageEventsSheet'
+import InboxSheet from './components/InboxSheet'
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN
 
 if (MAPBOX_TOKEN) {
   mapboxgl.accessToken = MAPBOX_TOKEN
 }
+
+const icon = (...codepoints) => String.fromCodePoint(...codepoints)
 
 const C = {
   primary: '#6d8f53',
@@ -34,18 +40,22 @@ const C = {
 }
 
 export const EVENT_CATEGORIES = [
-  { value: 'Social', label: 'Social', emoji: '🥂', color: '#6d8f53' },
-  { value: 'Sports', label: 'Sports', emoji: '⚽', color: '#6c95bf' },
-  { value: 'Arts', label: 'Arts', emoji: '🎨', color: '#c27d97' },
-  { value: 'Education', label: 'Learning', emoji: '📚', color: '#9d7f57' },
-  { value: 'Tech', label: 'Tech', emoji: '💻', color: '#5d8b94' },
-  { value: 'Outdoors', label: 'Outdoors', emoji: '🌲', color: '#4f9b73' },
-  { value: 'Faith', label: 'Faith', emoji: '🙏', color: '#d9a441' },
-  { value: 'Food', label: 'Food', emoji: '🍜', color: '#c9773d' },
-  { value: 'Music', label: 'Music', emoji: '🎵', color: '#8a6bc0' },
-  { value: 'Wellness', label: 'Wellness', emoji: '🧘', color: '#5fa89f' },
-  { value: 'Family', label: 'Family', emoji: '👨‍👩‍👧', color: '#a6735a' },
-  { value: 'Networking', label: 'Networking', emoji: '🤝', color: '#5577b2' },
+  { value: 'Social', label: 'Social', emoji: icon(0x1f942), color: '#6d8f53' },
+  { value: 'Coffee', label: 'Coffee', emoji: icon(0x2615), color: '#8b6a4b' },
+  { value: 'Sports', label: 'Sports', emoji: icon(0x26bd), color: '#6c95bf' },
+  { value: 'Arts', label: 'Arts', emoji: icon(0x1f3a8), color: '#c27d97' },
+  { value: 'Education', label: 'Learning', emoji: icon(0x1f4da), color: '#9d7f57' },
+  { value: 'Tech', label: 'Tech', emoji: icon(0x1f4bb), color: '#5d8b94' },
+  { value: 'Outdoors', label: 'Outdoors', emoji: icon(0x1f332), color: '#4f9b73' },
+  { value: 'Faith', label: 'Faith', emoji: icon(0x1f64f), color: '#d9a441' },
+  { value: 'Food', label: 'Food', emoji: icon(0x1f35c), color: '#c9773d' },
+  { value: 'Music', label: 'Music', emoji: icon(0x1f3b5), color: '#8a6bc0' },
+  { value: 'Wellness', label: 'Wellness', emoji: icon(0x1f9d8), color: '#5fa89f' },
+  { value: 'Family', label: 'Family', emoji: icon(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467), color: '#a6735a' },
+  { value: 'Networking', label: 'Networking', emoji: icon(0x1f91d), color: '#5577b2' },
+  { value: 'Games', label: 'Games', emoji: icon(0x1f3b2), color: '#9a6ad1' },
+  { value: 'Nightlife', label: 'Nightlife', emoji: icon(0x1f37b), color: '#b56274' },
+  { value: 'Volunteering', label: 'Volunteering', emoji: icon(0x1f90d), color: '#4b8b64' },
 ]
 
 const EMPTY_CREATE_FORM = {
@@ -57,9 +67,16 @@ const EMPTY_CREATE_FORM = {
   max_attendees: '',
   addressQuery: '',
   addressLabel: '',
+  vibe: 'Chill',
+  energy: 'Easy pace',
+  welcome: 'Anyone can join',
+  price: 'Free',
+  bringAlong: 'Just yourself',
+  visibility: 'Open to everyone',
 }
 
 const DEFAULT_CENTER = [-114.0719, 51.0447]
+const CANCELLED_PREFIX = '[Cancelled] '
 
 function categoryMeta(value) {
   return EVENT_CATEGORIES.find((item) => item.value === value) || EVENT_CATEGORIES[0]
@@ -84,6 +101,41 @@ function isUpcoming(value) {
   return new Date(value).getTime() >= Date.now() - 60 * 60 * 1000
 }
 
+function isCancelledEvent(event) {
+  return event?.title?.startsWith(CANCELLED_PREFIX)
+}
+
+function formatDistanceKm(distanceKm) {
+  if (distanceKm == null || Number.isNaN(distanceKm)) return ''
+  if (distanceKm < 1) return `${Math.round(distanceKm * 1000)} m away`
+  return `${distanceKm.toFixed(distanceKm < 10 ? 1 : 0)} km away`
+}
+
+function getDistanceKm(from, to) {
+  if (!from || typeof to?.lat !== 'number' || typeof to?.lng !== 'number') return null
+
+  const toRad = (degrees) => degrees * (Math.PI / 180)
+  const earthRadiusKm = 6371
+  const latDelta = toRad(to.lat - from.lat)
+  const lngDelta = toRad(to.lng - from.lng)
+  const lat1 = toRad(from.lat)
+  const lat2 = toRad(to.lat)
+
+  const a = Math.sin(latDelta / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(lngDelta / 2) ** 2
+
+  return 2 * earthRadiusKm * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+function displayNameForProfile(profile) {
+  if (!profile) return 'Your profile'
+  return profile.name || profile.email?.split('@')[0] || 'Member'
+}
+
+function hydrateEvent(event) {
+  return parseEventRecord(event)
+}
+
 export default function App() {
   const mapContainer = useRef(null)
   const map = useRef(null)
@@ -95,6 +147,9 @@ export default function App() {
   const [showAuth, setShowAuth] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
+  const [showManageEvents, setShowManageEvents] = useState(false)
+  const [showInbox, setShowInbox] = useState(false)
+  const [profileTarget, setProfileTarget] = useState(null)
   const [pickMode, setPickMode] = useState(false)
   const [pickedLoc, setPickedLoc] = useState(null)
   const [mapLoaded, setMapLoaded] = useState(false)
@@ -109,24 +164,99 @@ export default function App() {
   const [searchText, setSearchText] = useState('')
   const [isDesktop, setIsDesktop] = useState(false)
   const [loadingEvents, setLoadingEvents] = useState(false)
+  const [profile, setProfile] = useState(null)
+  const [friendRequests, setFriendRequests] = useState([])
+  const [friends, setFriends] = useState([])
+  const [threads, setThreads] = useState([])
+  const [activeThreadId, setActiveThreadId] = useState('')
+  const [userLocation, setUserLocation] = useState(null)
+  const [sharedEventId, setSharedEventId] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return new URLSearchParams(window.location.search).get('event') || ''
+  })
 
   const hasMapboxToken = Boolean(MAPBOX_TOKEN)
 
-  const ensureProfile = async (user) => {
-    if (!supabase || !user?.id) return
+  const ensureProfile = useCallback(async (user) => {
+    if (!supabase || !user?.id) return null
 
-    const { error } = await supabase.from('profiles').upsert({
+    const payload = {
       id: user.id,
       email: user.email || '',
-      name: user.user_metadata?.name || user.email?.split('@')[0] || '',
+      name: user.user_metadata?.name || user.user_metadata?.full_name || user.email?.split('@')[0] || '',
       city: '',
       interests: [],
-    })
-
-    if (error) {
-      throw error
     }
-  }
+
+    const { error } = await supabase.from('profiles').upsert(payload)
+    if (error) throw error
+    return payload
+  }, [])
+
+  const fetchProfile = useCallback(async (userId) => {
+    if (!supabase || !userId) {
+      setProfile(null)
+      return
+    }
+
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle()
+
+    setProfile(data || null)
+  }, [])
+
+  const refreshSocial = useCallback(async (userId) => {
+    if (!supabase || !userId) {
+      setFriendRequests([])
+      setFriends([])
+      setThreads([])
+      setActiveThreadId('')
+      return
+    }
+
+    const social = await fetchSocialData(supabase, userId)
+    setFriendRequests(social.requests)
+    setFriends(social.friends)
+    setThreads(social.threads)
+    setActiveThreadId((current) => current || social.threads[0]?.id || '')
+  }, [])
+
+  const fetchEvents = useCallback(async () => {
+    if (!supabase) return
+
+    setLoadingEvents(true)
+
+    const relationQuery = await supabase
+      .from('events')
+      .select(`
+        *,
+        host:profiles!events_host_id_fkey (
+          id,
+          name,
+          email,
+          city,
+          interests
+        )
+      `)
+      .order('date', { ascending: true })
+
+    if (relationQuery.data) {
+      setEvents(relationQuery.data.map(hydrateEvent))
+      setLoadingEvents(false)
+      return
+    }
+
+    const fallbackQuery = await supabase
+      .from('events')
+      .select('*')
+      .order('date', { ascending: true })
+
+    if (fallbackQuery.data) setEvents(fallbackQuery.data.map(hydrateEvent))
+    setLoadingEvents(false)
+  }, [])
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined
@@ -139,44 +269,130 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (typeof window === 'undefined' || !navigator.geolocation) return undefined
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setUserLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        })
+      },
+      () => {},
+      { enableHighAccuracy: false, timeout: 7000, maximumAge: 1000 * 60 * 10 },
+    )
+
+    return undefined
+  }, [])
+
+  useEffect(() => {
     if (!supabase) return undefined
 
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      setSession(session)
-      if (session?.user) {
+    let cancelled = false
+
+    supabase.auth.getSession().then(async ({ data: { session: currentSession } }) => {
+      if (cancelled) return
+      setSession(currentSession)
+
+      if (currentSession?.user) {
         try {
-          await ensureProfile(session.user)
+          await ensureProfile(currentSession.user)
         } catch (_error) {
-          // keep the session even if profile bootstrap fails; create flow will retry
+          // Keep the user signed in even if the bootstrap upsert fails.
+        }
+
+        fetchProfile(currentSession.user.id)
+        refreshSocial(currentSession.user.id)
+        if (authCb) {
+          const callback = authCb
+          setAuthCb(null)
+          callback()
         }
       }
     })
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (cancelled) return
+
       setSession(nextSession)
-      if (nextSession?.user) {
-        ensureProfile(nextSession.user).catch(() => {})
+
+      if (!nextSession?.user) {
+        setProfile(null)
+        return
       }
+
+      ensureProfile(nextSession.user)
+        .catch(() => {})
+        .finally(() => {
+          fetchProfile(nextSession.user.id)
+          fetchEvents()
+          refreshSocial(nextSession.user.id)
+          setShowAuth(false)
+          if (authCb) {
+            const callback = authCb
+            setAuthCb(null)
+            window.setTimeout(callback, 0)
+          }
+        })
     })
 
-    return () => subscription.unsubscribe()
-  }, [])
-
-  const fetchEvents = async () => {
-    if (!supabase) return
-
-    setLoadingEvents(true)
-    const { data } = await supabase
-      .from('events')
-      .select('*')
-      .order('date', { ascending: true })
-
-    if (data) setEvents(data)
-    setLoadingEvents(false)
-  }
+    return () => {
+      cancelled = true
+      subscription.unsubscribe()
+    }
+  }, [authCb, ensureProfile, fetchEvents, fetchProfile, refreshSocial])
 
   useEffect(() => {
     fetchEvents()
+  }, [fetchEvents])
+
+  useEffect(() => {
+    if (showInbox && session?.user?.id) {
+      refreshSocial(session.user.id)
+    }
+  }, [refreshSocial, session?.user?.id, showInbox])
+
+  useEffect(() => {
+    if (!sharedEventId) {
+      setSelected(null)
+      return
+    }
+
+    if (events.length === 0) return
+
+    const sharedEvent = events.find((event) => event.id === sharedEventId)
+    if (!sharedEvent) return
+
+    setSelected(sharedEvent)
+    if (typeof sharedEvent.lat === 'number' && typeof sharedEvent.lng === 'number' && map.current) {
+      map.current.flyTo({ center: [sharedEvent.lng, sharedEvent.lat], zoom: 13, duration: 500 })
+    }
+  }, [events, sharedEventId])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined
+
+    const updateFromUrl = () => {
+      const nextId = new URLSearchParams(window.location.search).get('event') || ''
+      setSharedEventId(nextId)
+    }
+
+    window.addEventListener('popstate', updateFromUrl)
+    return () => window.removeEventListener('popstate', updateFromUrl)
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const url = new URL(window.location.href)
+    if (selected?.id) {
+      url.searchParams.set('event', selected.id)
+    } else {
+      url.searchParams.delete('event')
+    }
+
+    window.history.replaceState({}, '', url)
+  }, [selected])
 
   useEffect(() => {
     if (!hasMapboxToken || map.current) return
@@ -211,6 +427,7 @@ export default function App() {
 
       const meta = categoryMeta(event.category)
       const count = event.attendees?.length ?? 0
+      const cancelled = isCancelledEvent(event)
       const el = document.createElement('button')
       el.type = 'button'
       el.style.cssText = `
@@ -218,7 +435,7 @@ export default function App() {
         width: ${count > 9 ? 50 : 44}px;
         height: ${count > 9 ? 50 : 44}px;
         border-radius: 999px;
-        background: ${meta.color};
+        background: ${cancelled ? '#8d8175' : meta.color};
         border: 3px solid white;
         box-shadow: 0 6px 18px rgba(0,0,0,0.2);
         display: flex;
@@ -232,7 +449,7 @@ export default function App() {
         padding: 0;
       `
 
-      el.innerHTML = `<span style="position:absolute; top:-8px; right:-4px; font-size:14px;">${meta.emoji}</span>${count || ''}`
+      el.innerHTML = `<span style="position:absolute; top:-8px; right:-4px; font-size:14px;">${cancelled ? icon(0x26a0) : meta.emoji}</span>${count || ''}`
 
       el.addEventListener('click', (clickEvent) => {
         clickEvent.stopPropagation()
@@ -290,8 +507,10 @@ export default function App() {
   const filteredEvents = useMemo(() => {
     let next = [...events]
 
+    next = next.filter((event) => canViewEvent(event, session?.user?.id, sharedEventId))
+
     if (filter === 'Upcoming') {
-      next = next.filter((event) => isUpcoming(event.date))
+      next = next.filter((event) => isUpcoming(event.date) && !isCancelledEvent(event))
     }
 
     if (filter === 'Mine' && session?.user?.id) {
@@ -307,7 +526,8 @@ export default function App() {
       next = next.filter((event) =>
         event.title?.toLowerCase().includes(query)
         || event.city?.toLowerCase().includes(query)
-        || event.description?.toLowerCase().includes(query),
+        || event.descriptionDisplay?.toLowerCase().includes(query)
+        || event.host?.name?.toLowerCase().includes(query),
       )
     }
 
@@ -334,9 +554,9 @@ export default function App() {
   const handleAuthSuccess = () => {
     setShowAuth(false)
     fetchEvents()
-    if (authCb) {
-      authCb()
-      setAuthCb(null)
+    if (session?.user?.id) {
+      fetchProfile(session.user.id)
+      refreshSocial(session.user.id)
     }
   }
 
@@ -374,9 +594,14 @@ export default function App() {
   }
 
   const handleEventCreated = async (createRequest) => {
+    if (!supabase) {
+      setCreateError('Supabase is not configured yet.')
+      return
+    }
+
     setCreateLoading(true)
     setCreateError('')
-    let ok = false
+    let createdEvent = null
     try {
       const {
         data: { session: freshSession },
@@ -386,24 +611,72 @@ export default function App() {
         await ensureProfile(freshSession.user)
       }
 
-      ok = await createRequest()
+      createdEvent = await createRequest()
     } catch (error) {
       setCreateError(error.message || 'Could not prepare your account for event creation.')
     }
     setCreateLoading(false)
 
-    if (!ok) return
+    if (!createdEvent) return
+
+    try {
+      await ensureEventThread(supabase, createdEvent, session?.user?.id || createdEvent.host_id)
+    } catch (_error) {
+      // Event still exists even if chat provisioning fails.
+    }
 
     setShowCreate(false)
     setPickedLoc(null)
     setCreateForm(EMPTY_CREATE_FORM)
     setCreateInfo('')
     await fetchEvents()
+    if (session?.user?.id) {
+      refreshSocial(session.user.id)
+    }
   }
 
-  const handleJoined = (updatedEvent) => {
-    setEvents((current) => current.map((event) => (event.id === updatedEvent.id ? updatedEvent : event)))
-    setSelected(updatedEvent)
+  const handleEventUpdated = (updatedEvent) => {
+    const hydratedEvent = hydrateEvent(updatedEvent)
+    setEvents((current) => current.map((event) => (event.id === hydratedEvent.id ? hydratedEvent : event)))
+    setSelected(hydratedEvent)
+    if (session?.user?.id) {
+      refreshSocial(session.user.id)
+    }
+  }
+
+  const cancelEvent = async (event) => {
+    if (!supabase || !session?.user?.id || event.host_id !== session.user.id || isCancelledEvent(event)) return null
+    if (typeof window !== 'undefined' && !window.confirm('Cancel this event for everyone?')) return null
+
+    const nextTitle = event.title.startsWith(CANCELLED_PREFIX) ? event.title : `${CANCELLED_PREFIX}${event.title}`
+    const nextDescription = [
+      'This gathering was cancelled by the host.',
+      event.description?.replace(/^This gathering was cancelled by the host\.\n\n/, '') || '',
+    ].filter(Boolean).join('\n\n')
+
+    const { data, error } = await supabase
+      .from('events')
+      .update({
+        title: nextTitle,
+        description: nextDescription,
+      })
+      .eq('id', event.id)
+      .select(`
+        *,
+        host:profiles!events_host_id_fkey (
+          id,
+          name,
+          email,
+          city,
+          interests
+        )
+      `)
+      .single()
+
+    if (error || !data) return null
+
+    handleEventUpdated(data)
+    return data
   }
 
   const focusEvent = (event) => {
@@ -412,6 +685,72 @@ export default function App() {
       map.current.flyTo({ center: [event.lng, event.lat], zoom: 13, duration: 500 })
     }
   }
+
+  const openProfileSheet = (nextProfile) => {
+    if (!nextProfile?.id) return
+    setProfileTarget(nextProfile)
+    setShowProfile(true)
+  }
+
+  const getFriendshipState = (profileId) => {
+    const request = friendRequests.find((item) =>
+      (item.sender_id === profileId && item.receiver_id === session?.user?.id)
+      || (item.receiver_id === profileId && item.sender_id === session?.user?.id),
+    )
+
+    return request?.status || 'none'
+  }
+
+  const handleAddFriend = async (targetProfile) => {
+    if (!supabase || !session?.user?.id || !targetProfile?.id || targetProfile.id === session.user.id) return
+    await sendFriendRequest(supabase, session.user.id, targetProfile.id)
+    await refreshSocial(session.user.id)
+  }
+
+  const handleRespondToRequest = async (requestId, status) => {
+    if (!supabase || !session?.user?.id) return
+    await respondToFriendRequest(supabase, requestId, status)
+    await refreshSocial(session.user.id)
+  }
+
+  const handleOpenDirectChat = async (targetProfile) => {
+    if (!supabase || !session?.user?.id || !targetProfile?.id) return
+    const thread = await ensureDirectThread(supabase, session.user.id, targetProfile.id)
+    await refreshSocial(session.user.id)
+    setActiveThreadId(thread.id)
+    setShowInbox(true)
+  }
+
+  const handleOpenEventChat = async (event) => {
+    if (!supabase || !session?.user?.id || !event?.id) return
+    const thread = await ensureEventThread(supabase, event, session.user.id)
+    if (!thread) return
+    await refreshSocial(session.user.id)
+    setActiveThreadId(thread.id)
+    setShowInbox(true)
+  }
+
+  const handleSendMessage = async (threadId, body) => {
+    if (!supabase || !session?.user?.id) return
+    await sendMessage(supabase, threadId, session.user.id, body)
+    await refreshSocial(session.user.id)
+    setActiveThreadId(threadId)
+  }
+
+  const activeOwnProfile = session?.user
+    ? {
+      id: session.user.id,
+      email: session.user.email,
+      name: profile?.name || session.user.user_metadata?.name || session.user.user_metadata?.full_name || session.user.email?.split('@')[0] || '',
+      city: profile?.city || '',
+      interests: profile?.interests || [],
+    }
+    : null
+
+  const selectedDistanceLabel = useMemo(() => {
+    if (!selected) return ''
+    return formatDistanceKm(getDistanceKm(userLocation, selected))
+  }, [selected, userLocation])
 
   return (
     <div className={`app-shell ${isDesktop ? 'desktop-shell' : ''}`}>
@@ -439,9 +778,17 @@ export default function App() {
         </div>
         <div className="top-actions">
           {session ? (
-            <button type="button" className="avatar-button" onClick={() => setShowProfile(true)}>
-              {session.user.email?.charAt(0)?.toUpperCase() || 'U'}
-            </button>
+            <>
+              <button type="button" className="glass-button" onClick={() => setShowInbox(true)}>
+                Inbox
+              </button>
+              <button type="button" className="glass-button" onClick={() => setShowManageEvents(true)}>
+                My events
+              </button>
+              <button type="button" className="avatar-button" onClick={() => openProfileSheet(activeOwnProfile)}>
+                {(activeOwnProfile?.name || activeOwnProfile?.email || 'U').charAt(0).toUpperCase()}
+              </button>
+            </>
           ) : (
             <button type="button" className="glass-button" onClick={() => setShowAuth(true)}>
               Sign in
@@ -462,12 +809,15 @@ export default function App() {
           <div className="panel-header">
             <div>
               <div className="panel-title">Explore gatherings</div>
-              <div className="panel-subtitle">Filter the map and jump into what feels right.</div>
+              <div className="panel-subtitle">
+                Filter the map, open host profiles, and jump straight into a plan that feels right.
+              </div>
             </div>
             {session ? (
               <div className="profile-glance">
                 <span>{myStats.hosting} hosting</span>
                 <span>{myStats.joined} joined</span>
+                {userLocation ? <span>Distance on</span> : null}
               </div>
             ) : null}
           </div>
@@ -477,7 +827,7 @@ export default function App() {
               className="panel-input"
               value={searchText}
               onChange={(event) => setSearchText(event.target.value)}
-              placeholder="Search title, city, or vibe"
+              placeholder="Search title, city, host, or vibe"
             />
           </div>
 
@@ -517,7 +867,7 @@ export default function App() {
             ) : filteredEvents.length === 0 ? (
               <div className="empty-block">
                 <div className="empty-title">Nothing matched those filters.</div>
-                <div className="empty-copy">Try another category or create the first event in your area.</div>
+                <div className="empty-copy">Try another category, open up the timing, or create the first event in your area.</div>
               </div>
             ) : (
               filteredEvents.map((event) => (
@@ -526,6 +876,8 @@ export default function App() {
                   event={event}
                   selected={selected?.id === event.id}
                   onOpen={() => focusEvent(event)}
+                  onOpenHost={() => openProfileSheet(event.host || { id: event.host_id, name: 'Host' })}
+                  distanceLabel={formatDistanceKm(getDistanceKm(userLocation, event))}
                 />
               ))
             )}
@@ -540,9 +892,14 @@ export default function App() {
           session={session}
           onClose={() => setSelected(null)}
           requireAuth={requireAuth}
-          onJoined={handleJoined}
+          onJoined={handleEventUpdated}
+          onEventUpdated={handleEventUpdated}
+          onCancelEvent={cancelEvent}
+          onOpenHostProfile={() => openProfileSheet(selected.host || { id: selected.host_id, name: 'Host' })}
+          onOpenEventChat={handleOpenEventChat}
           categoryMeta={categoryMeta(selected.category)}
           isDesktop={isDesktop}
+          distanceLabel={selectedDistanceLabel}
         />
       )}
 
@@ -575,33 +932,105 @@ export default function App() {
         />
       )}
 
-      {showProfile && (
+      {showProfile && profileTarget && (
         <ProfileSheet
           C={C}
+          profileUser={profileTarget}
           session={session}
           events={events}
           onClose={() => setShowProfile(false)}
+          onOpenEvent={(event) => {
+            setShowProfile(false)
+            focusEvent(event)
+          }}
+          onCancelEvent={cancelEvent}
+          onAddFriend={async (targetProfile) => {
+            await handleAddFriend(targetProfile)
+          }}
+          onMessageUser={async (targetProfile) => {
+            setShowProfile(false)
+            await handleOpenDirectChat(targetProfile)
+          }}
+          friendshipState={getFriendshipState(profileTarget.id)}
         />
       )}
+
+      {showManageEvents && session ? (
+        <ManageEventsSheet
+          session={session}
+          events={events.filter((event) => canViewEvent(event, session.user.id, sharedEventId))}
+          onClose={() => setShowManageEvents(false)}
+          onOpenEvent={(event) => {
+            setShowManageEvents(false)
+            focusEvent(event)
+          }}
+          onCancelEvent={cancelEvent}
+          onOpenEventChat={(event) => {
+            setShowManageEvents(false)
+            handleOpenEventChat(event)
+          }}
+        />
+      ) : null}
+
+      {showInbox && session ? (
+        <InboxSheet
+          session={session}
+          requests={friendRequests}
+          friends={friends}
+          threads={threads}
+          activeThreadId={activeThreadId}
+          onClose={() => setShowInbox(false)}
+          onOpenThread={setActiveThreadId}
+          onOpenDirectChat={handleOpenDirectChat}
+          onSendMessage={handleSendMessage}
+          onRespondToRequest={handleRespondToRequest}
+        />
+      ) : null}
     </div>
   )
 }
 
-function EventListCard({ event, onOpen, selected }) {
+function EventListCard({ event, onOpen, onOpenHost, selected, distanceLabel }) {
   const meta = categoryMeta(event.category)
   const count = event.attendees?.length ?? 0
+  const cancelled = isCancelledEvent(event)
+  const limitedVisibility = event.visibility && event.visibility !== 'Open to everyone'
 
   return (
     <button type="button" className={`event-card ${selected ? 'selected' : ''}`} onClick={onOpen}>
-      <div className="event-card-badge" style={{ background: `${meta.color}18`, color: meta.color }}>
-        <span>{meta.emoji}</span>
-        {meta.label}
+      <div className="event-card-top">
+        <div className="event-card-top-badges">
+          <div className="event-card-badge" style={{ background: `${meta.color}18`, color: meta.color }}>
+            <span>{meta.emoji}</span>
+            {meta.label}
+          </div>
+          {limitedVisibility ? <div className="event-status-chip subtle-status-chip">{event.visibility}</div> : null}
+        </div>
+        {cancelled ? <div className="event-status-chip">Cancelled</div> : null}
       </div>
       <div className="event-card-title">{event.title}</div>
       <div className="event-card-meta">{formatDate(event.date)} / {event.city}</div>
+      {distanceLabel ? <div className="event-card-distance">{distanceLabel}</div> : null}
+      {event.host?.name ? (
+        <span
+          className="inline-link-button"
+          role="button"
+          tabIndex={0}
+          onClick={(eventClick) => { eventClick.stopPropagation(); onOpenHost() }}
+          onKeyDown={(eventKey) => {
+            if (eventKey.key === 'Enter' || eventKey.key === ' ') {
+              eventKey.preventDefault()
+              eventKey.stopPropagation()
+              onOpenHost()
+            }
+          }}
+        >
+          Hosted by {displayNameForProfile(event.host)}
+        </span>
+      ) : null}
       <div className="event-card-footer">
         <span>{eventCountLabel(count)}</span>
-        <span>Open</span>
+        <span>{cancelled ? 'View details' : 'Open'}</span>
       </div>
     </button>
   )

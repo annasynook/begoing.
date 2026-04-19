@@ -10,9 +10,29 @@ function formatDate(value) {
   })
 }
 
-export default function ProfileSheet({ C, session, events, onClose }) {
-  const hosted = events.filter((event) => event.host_id === session?.user?.id)
-  const joined = events.filter((event) => event.attendees?.includes(session?.user?.id))
+function displayNameForProfile(profileUser) {
+  return profileUser?.name || profileUser?.email?.split('@')[0] || 'Member'
+}
+
+function isCancelledEvent(event) {
+  return event?.title?.startsWith('[Cancelled] ')
+}
+
+export default function ProfileSheet({
+  C,
+  profileUser,
+  session,
+  events,
+  onClose,
+  onOpenEvent,
+  onCancelEvent,
+  onAddFriend,
+  onMessageUser,
+  friendshipState,
+}) {
+  const isOwnProfile = profileUser?.id === session?.user?.id
+  const hosted = events.filter((event) => event.host_id === profileUser?.id)
+  const joined = events.filter((event) => event.attendees?.includes(profileUser?.id))
 
   return (
     <div className="sheet-scrim" onClick={onClose}>
@@ -20,10 +40,21 @@ export default function ProfileSheet({ C, session, events, onClose }) {
         <div className="sheet-handle" />
         <div className="sheet-head">
           <div>
-            <div className="sheet-title">Your profile</div>
-            <div className="sheet-subtitle">{session?.user?.email}</div>
+            <div className="sheet-title">{isOwnProfile ? 'Your profile' : displayNameForProfile(profileUser)}</div>
+            <div className="sheet-subtitle">{profileUser?.email || 'Public profile'}</div>
           </div>
           <button type="button" className="icon-dismiss" onClick={onClose}>x</button>
+        </div>
+
+        <div className="profile-head-card">
+          <div className="profile-avatar-large">
+            {displayNameForProfile(profileUser).charAt(0).toUpperCase()}
+          </div>
+          <div className="profile-head-copy">
+            <strong>{displayNameForProfile(profileUser)}</strong>
+            <span>{profileUser?.city || (isOwnProfile ? 'Add your city later' : 'City not shared yet')}</span>
+            <span>{isOwnProfile ? 'Manage your own events here.' : 'See what this host has joined and created.'}</span>
+          </div>
         </div>
 
         <div className="profile-stats">
@@ -31,37 +62,70 @@ export default function ProfileSheet({ C, session, events, onClose }) {
           <div className="profile-stat"><strong>{joined.length}</strong><span>Joined</span></div>
         </div>
 
-        <div className="profile-section-title">Hosted by you</div>
+        {!isOwnProfile ? (
+          <div className="event-actions secondary-actions">
+            <button
+              type="button"
+              className="outline-button grow"
+              onClick={() => onAddFriend(profileUser)}
+              disabled={friendshipState === 'accepted' || friendshipState === 'pending'}
+            >
+              {friendshipState === 'accepted' ? 'Already friends' : friendshipState === 'pending' ? 'Request pending' : 'Add friend'}
+            </button>
+            <button type="button" className="primary-submit grow" onClick={() => onMessageUser(profileUser)}>
+              Message
+            </button>
+          </div>
+        ) : null}
+
+        <div className="profile-section-title">{isOwnProfile ? 'Your hosted events' : 'Hosted events'}</div>
         <div className="profile-list">
-          {hosted.length === 0 ? <div className="helper-copy">You have not hosted anything yet.</div> : hosted.map((event) => (
+          {hosted.length === 0 ? <div className="helper-copy">Nothing hosted yet.</div> : hosted.map((event) => (
             <div key={event.id} className="profile-item">
               <strong>{event.title}</strong>
               <span>{formatDate(event.date)} / {event.city}</span>
+              <div className="profile-item-actions">
+                <button type="button" className="inline-link-button" onClick={() => onOpenEvent(event)}>
+                  Open event
+                </button>
+                {isOwnProfile && !isCancelledEvent(event) ? (
+                  <button type="button" className="inline-link-button danger-link-button" onClick={() => onCancelEvent(event)}>
+                    Cancel event
+                  </button>
+                ) : null}
+              </div>
             </div>
           ))}
         </div>
 
-        <div className="profile-section-title">Joined events</div>
+        <div className="profile-section-title">{isOwnProfile ? 'Events you joined' : 'Joined events'}</div>
         <div className="profile-list">
-          {joined.length === 0 ? <div className="helper-copy">You have not joined anything yet.</div> : joined.map((event) => (
+          {joined.length === 0 ? <div className="helper-copy">Nothing joined yet.</div> : joined.map((event) => (
             <div key={event.id} className="profile-item">
               <strong>{event.title}</strong>
               <span>{formatDate(event.date)} / {event.city}</span>
+              <div className="profile-item-actions">
+                <button type="button" className="inline-link-button" onClick={() => onOpenEvent(event)}>
+                  Open event
+                </button>
+              </div>
             </div>
           ))}
         </div>
 
-        <button
-          type="button"
-          className="outline-button profile-signout"
-          onClick={async () => {
-            if (supabase) await supabase.auth.signOut()
-            onClose()
-          }}
-          style={{ color: C.text }}
-        >
-          Sign out
-        </button>
+        {isOwnProfile ? (
+          <button
+            type="button"
+            className="outline-button profile-signout"
+            onClick={async () => {
+              if (supabase) await supabase.auth.signOut()
+              onClose()
+            }}
+            style={{ color: C.text }}
+          >
+            Sign out
+          </button>
+        ) : null}
       </div>
     </div>
   )

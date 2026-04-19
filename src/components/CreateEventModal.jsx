@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import { buildEventDescription } from '../lib/eventDetails'
+
+const QUICK_OPTIONS = {
+  vibe: ['Chill', 'Lively', 'Cozy', 'Curious', 'Celebratory'],
+  energy: ['Easy pace', 'A little active', 'High energy'],
+  welcome: ['Anyone can join', 'Beginners welcome', 'Great for making friends', 'Bring a friend', 'Family friendly'],
+  price: ['Free', 'Under $20', 'Paid'],
+  bringAlong: ['Just yourself', 'Bring a friend', 'Bring gear', 'Bring a snack', 'Bring questions'],
+  visibility: ['Open to everyone', 'Invite only', 'Friends only'],
+}
 
 function findCity(feature) {
   const context = feature.context || []
@@ -6,9 +16,27 @@ function findCity(feature) {
   return city?.text || ''
 }
 
+function ChoiceGroup({ label, value, options, onChange }) {
+  return (
+    <div>
+      <div className="field-label">{label}</div>
+      <div className="choice-wrap">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            className={`choice-card ${value === option ? 'active' : ''}`}
+            onClick={() => onChange(option)}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function CreateEventModal({
-  C,
-  session,
   pickedLoc,
   form,
   setForm,
@@ -72,6 +100,7 @@ export default function CreateEventModal({
       setError('Title, date, and city are required.')
       return
     }
+
     if (!pickedLoc) {
       setError('Choose an address or pin the event on the map.')
       return
@@ -93,25 +122,29 @@ export default function CreateEventModal({
         return false
       }
 
-      const { error: createError } = await supabase.from('events').insert({
-        title: form.title.trim(),
-        description: form.description.trim(),
-        date: form.date,
-        city: form.city.trim(),
-        category: form.category,
-        max_attendees: form.max_attendees ? parseInt(form.max_attendees, 10) : 0,
-        host_id: freshSession.user.id,
-        attendees: [freshSession.user.id],
-        lat: pickedLoc.lat,
-        lng: pickedLoc.lng,
-      })
+      const { data: createdEvent, error: createError } = await supabase
+        .from('events')
+        .insert({
+          title: form.title.trim(),
+          description: buildEventDescription(form),
+          date: form.date,
+          city: form.city.trim(),
+          category: form.category,
+          max_attendees: form.max_attendees ? parseInt(form.max_attendees, 10) : 0,
+          host_id: freshSession.user.id,
+          attendees: [freshSession.user.id],
+          lat: pickedLoc.lat,
+          lng: pickedLoc.lng,
+        })
+        .select('*')
+        .single()
 
       if (createError) {
         setError(createError.message)
         return false
       }
 
-      return true
+      return createdEvent
     })
   }
 
@@ -137,7 +170,7 @@ export default function CreateEventModal({
         <div className="sheet-head">
           <div>
             <div className="sheet-title">Create a gathering</div>
-            <div className="sheet-subtitle">Search an address or pin it directly on the map.</div>
+            <div className="sheet-subtitle">Use quick answers first, then add only the details that matter.</div>
           </div>
           <button type="button" className="icon-dismiss" onClick={onClose}>x</button>
         </div>
@@ -146,11 +179,6 @@ export default function CreateEventModal({
           <div>
             <div className="field-label">Title *</div>
             <input className="sheet-input" value={form.title} onChange={(event) => set('title', event.target.value)} placeholder="Sunset coffee walk" />
-          </div>
-
-          <div>
-            <div className="field-label">Description</div>
-            <textarea className="sheet-textarea" value={form.description} onChange={(event) => set('description', event.target.value)} placeholder="What kind of vibe are people joining?" />
           </div>
 
           <div className="two-column">
@@ -180,6 +208,13 @@ export default function CreateEventModal({
               ))}
             </div>
           </div>
+
+          <ChoiceGroup label="What kind of vibe?" value={form.vibe} options={QUICK_OPTIONS.vibe} onChange={(value) => set('vibe', value)} />
+          <ChoiceGroup label="How active is it?" value={form.energy} options={QUICK_OPTIONS.energy} onChange={(value) => set('energy', value)} />
+          <ChoiceGroup label="Who is it good for?" value={form.welcome} options={QUICK_OPTIONS.welcome} onChange={(value) => set('welcome', value)} />
+          <ChoiceGroup label="Cost" value={form.price} options={QUICK_OPTIONS.price} onChange={(value) => set('price', value)} />
+          <ChoiceGroup label="What should people bring?" value={form.bringAlong} options={QUICK_OPTIONS.bringAlong} onChange={(value) => set('bringAlong', value)} />
+          <ChoiceGroup label="Who can see it?" value={form.visibility} options={QUICK_OPTIONS.visibility} onChange={(value) => set('visibility', value)} />
 
           <div>
             <div className="field-label">Address search</div>
@@ -232,6 +267,11 @@ export default function CreateEventModal({
             <button type="button" className="outline-button" onClick={onPickLocation}>
               Pick on map
             </button>
+          </div>
+
+          <div>
+            <div className="field-label">Anything else people should know?</div>
+            <textarea className="sheet-textarea" value={form.description} onChange={(event) => set('description', event.target.value)} placeholder="Parking tip, what to wear, where to meet, or anything that makes this easier to join." />
           </div>
 
           <div>
